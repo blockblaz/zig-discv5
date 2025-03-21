@@ -1,0 +1,36 @@
+{
+  "name": "discv5",
+  "version": "0.1.0",
+  "fingerprint": "0xaa48998bb85d427e",
+  "minimum_zig_version": "0.14.0",
+  "paths": [
+    "build.zig",
+    "build.zig.zon",
+    "src"
+  ],
+  "dependencies": {
+    "zbench": {
+      "url": "git+https://github.com/hendriknielaender/zbench#b69a438f5a1a96d4dd0ea69e1dbcb73a209f76cd"
+    },
+    "xev": {
+      "url": "git+https://github.com/mitchellh/libxev#94ed6af7b2aaaeab987fbf87fcee410063df715b"
+    }
+  },
+  "modules": {
+    "rlp": {
+      "root_source_file": "src/rlp.zig"
+    },
+    "enr": {
+      "root_source_file": "src/enr.zig"
+    }
+  },
+  "tests": {
+    "enr-bench": {
+      "root_module": {
+        "root_source_file": "src/enr_bench.zig",
+        "imports": ["enr", "zbench"]
+      },
+      "filters": []
+    }
+  }
+}
