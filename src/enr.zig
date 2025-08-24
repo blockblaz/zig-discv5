@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const rlp = @import("rlp.zig");
-const SmallBufMap = @import("small_buf_map.zig").SmallBufMap;
 
 const RLPReader = rlp.RLPReader;
 const RLPWriter = rlp.RLPWriter;
@@ -17,7 +16,58 @@ pub const max_kvs_size = max_enr_size - signature_size - 7;
 
 // assuming single-byte keys, empty values
 pub const max_kvs = max_kvs_size / 3;
-pub const KVs = SmallBufMap(max_kvs_size);
+
+pub const KVs = struct {
+    map: std.StringHashMap([]const u8),
+    allocator: std.mem.Allocator,
+
+    pub fn init() KVs {
+        return KVs{
+            .map = std.StringHashMap([]const u8).init(std.heap.page_allocator),
+            .allocator = std.heap.page_allocator,
+        };
+    }
+
+    pub fn deinit(self: *KVs) void {
+        // Free all keys and values
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.map.deinit();
+    }
+
+    pub fn put(self: *KVs, key: []const u8, value: []const u8) !void {
+        // Copy key and value to owned memory
+        const owned_key = try self.allocator.dupe(u8, key);
+        const owned_value = try self.allocator.dupe(u8, value);
+        try self.map.put(owned_key, owned_value);
+    }
+
+    pub fn get(self: *const KVs, key: []const u8) ?[]const u8 {
+        return self.map.get(key);
+    }
+
+    pub fn append(self: *KVs, key: []const u8, value: []const u8) !void {
+        try self.put(key, value);
+    }
+
+    pub const Iterator = struct {
+        inner: std.StringHashMap([]const u8).Iterator,
+
+        pub fn next(self: *Iterator) ?struct { key: []const u8, value: []const u8 } {
+            if (self.inner.next()) |entry| {
+                return .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+            }
+            return null;
+        }
+    };
+
+    pub fn iterator(self: *const KVs) Iterator {
+        return Iterator{ .inner = self.map.iterator() };
+    }
+};
 
 pub const IDScheme = enum {
     v4,
@@ -132,6 +182,10 @@ pub const ENR = struct {
     seq: u64,
     signature: [signature_size]u8,
 
+    pub fn deinit(self: *ENR) void {
+        self.kvs.deinit();
+    }
+
     pub fn get(self: *ENR, key: []const u8) ?[]const u8 {
         return self.kvs.get(key);
     }
@@ -231,6 +285,10 @@ pub const SignableENR = struct {
 
     const Self = @This();
 
+    pub fn deinit(self: *Self) void {
+        self.kvs.deinit();
+    }
+
     pub fn create(key_pair: KeyPair) SignableENR {
         var kvs = KVs.init();
         switch (key_pair) {
@@ -299,8 +357,8 @@ fn encodeSignedPayload(out: []u8, kvs: *KVs, seq: u64) !void {
 
     var kvs_it = kvs.iterator();
     while (kvs_it.next()) |entry| {
-        try writer.writeString(entry[0]);
-        try writer.writeString(entry[1]);
+        try writer.writeString(entry.key);
+        try writer.writeString(entry.value);
     }
 }
 
@@ -334,8 +392,8 @@ fn kvsLen(kvs: *KVs) usize {
     var length: usize = 0;
     var it = kvs.iterator();
     while (it.next()) |entry| {
-        length += rlp.elemLen(entry[0].len);
-        length += rlp.elemLen(entry[1].len);
+        length += rlp.elemLen(entry.key.len);
+        length += rlp.elemLen(entry.value.len);
     }
     return length;
 }
@@ -411,7 +469,7 @@ pub const EncodedENR = struct {
 
     pub fn publicKey(self: *const Self) PublicKey {
         const id_scheme = self.id();
-        return id_scheme.publicKey(self.kvs.get(id_scheme.publicKeyKey()).?) catch unreachable;
+        return id_scheme.publicKey(self.get(id_scheme.publicKeyKey()).?) catch unreachable;
     }
 
     pub fn nodeId(self: *const Self) NodeId {
@@ -443,6 +501,7 @@ pub const EncodedENR = struct {
         // - keys must be unique
         // - keys must be sorted
         var kvs = KVs.init();
+        defer kvs.deinit();
         while (!list_reader.finished()) {
             const key = try list_reader.read(.{ .short_string, .long_string });
             const value = try list_reader.read(.{ .single_byte, .short_string, .long_string });
@@ -524,6 +583,7 @@ test "ENR test vector" {
 
     var decoded_enr: ENR = undefined;
     try ENR.decodeTxtInto(&decoded_enr, enr_txt);
+    defer decoded_enr.deinit();
 
     // std.debug.print("{any}\n", .{decoded_enr});
     // ensure all decoded values match the test vector
@@ -535,11 +595,14 @@ test "ENR test vector" {
     try std.testing.expectEqualSlices(u8, udp, decoded_enr.kvs.get("udp").?);
 
     var signable_enr = SignableENR.create(KeyPair{ .v4 = kp });
+    defer signable_enr.deinit();
     signable_enr.seq = seq;
     try signable_enr.set("ip", ip);
     try signable_enr.set("udp", udp);
 
-    try std.testing.expectEqualSlices(u8, &signable_enr.kvs.buffer, &decoded_enr.kvs.buffer);
+    try std.testing.expectEqualSlices(u8, signable_enr.get("id").?, decoded_enr.get("id").?);
+    try std.testing.expectEqualSlices(u8, signable_enr.get("ip").?, decoded_enr.get("ip").?);
+    try std.testing.expectEqualSlices(u8, signable_enr.get("udp").?, decoded_enr.get("udp").?);
 
     _ = try signable_enr.sign();
     // try std.testing.expectEqualSlices(u8, signature, &x);
