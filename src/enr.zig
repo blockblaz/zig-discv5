@@ -19,7 +19,7 @@ pub const max_kvs_size = max_enr_size - signature_size - 7;
 pub const max_kvs = max_kvs_size / 3;
 
 // Conditional compilation: use StringHashMap on macOS, SmallBufMap on other platforms.Because test not working on macOS.
-pub const KVs = if (@import("builtin").target.os.tag == .macos) struct {
+pub const KVs = if (@import("builtin").target.os.tag == .macos or @import("builtin").target.os.tag == .linux) struct {
     map: std.StringHashMap([]const u8),
     allocator: std.mem.Allocator,
 
@@ -222,7 +222,7 @@ pub const ENR = struct {
     signature: [signature_size]u8,
 
     pub fn deinit(self: *ENR) void {
-        if (@import("builtin").target.os.tag == .macos) self.kvs.deinit();
+        if (@import("builtin").target.os.tag == .macos or @import("builtin").target.os.tag == .linux) self.kvs.deinit();
     }
 
     pub fn get(self: *ENR, key: []const u8) ?[]const u8 {
@@ -325,7 +325,7 @@ pub const SignableENR = struct {
     const Self = @This();
 
     pub fn deinit(self: *Self) void {
-        if (@import("builtin").target.os.tag == .macos) self.kvs.deinit();
+        if (@import("builtin").target.os.tag == .macos or @import("builtin").target.os.tag == .linux) self.kvs.deinit();
     }
 
     pub fn create(key_pair: KeyPair) SignableENR {
@@ -383,7 +383,7 @@ fn encodeIntoFromComponents(out: []u8, kvs: *KVs, seq: u64, signature: [signatur
     try writer.writeInt(u64, seq);
 
     var kvs_it = kvs.iterator();
-    defer if (@import("builtin").target.os.tag == .macos) kvs_it.deinit();
+    defer if (@import("builtin").target.os.tag == .macos or @import("builtin").target.os.tag == .linux) kvs_it.deinit();
 
     while (kvs_it.next()) |entry| {
         try writer.writeString(entry[0]);
@@ -397,7 +397,7 @@ fn encodeSignedPayload(out: []u8, kvs: *KVs, seq: u64) !void {
     try writer.writeInt(u64, seq);
 
     var kvs_it = kvs.iterator();
-    defer if (@import("builtin").target.os.tag == .macos) kvs_it.deinit();
+    defer if (@import("builtin").target.os.tag == .macos or @import("builtin").target.os.tag == .linux) kvs_it.deinit();
 
     while (kvs_it.next()) |entry| {
         try writer.writeString(entry[0]);
@@ -434,7 +434,7 @@ fn signedListLen(kvs: *KVs, seq: u64) usize {
 fn kvsLen(kvs: *KVs) usize {
     var length: usize = 0;
     var it = kvs.iterator();
-    defer if (@import("builtin").target.os.tag == .macos) it.deinit();
+    defer if (@import("builtin").target.os.tag == .macos or @import("builtin").target.os.tag == .linux) it.deinit();
 
     while (it.next()) |entry| {
         length += rlp.elemLen(entry[0].len);
@@ -546,7 +546,7 @@ pub const EncodedENR = struct {
         // - keys must be unique
         // - keys must be sorted
         var kvs = KVs.init();
-        defer if (@import("builtin").target.os.tag == .macos) kvs.deinit();
+        defer if (@import("builtin").target.os.tag == .macos or @import("builtin").target.os.tag == .linux) kvs.deinit();
         while (!list_reader.finished()) {
             const key = try list_reader.read(.{ .short_string, .long_string });
             const value = try list_reader.read(.{ .single_byte, .short_string, .long_string });
