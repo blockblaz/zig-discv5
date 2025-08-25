@@ -80,14 +80,14 @@ pub const KVs = if (@import("builtin").target.os.tag == .macos) struct {
             };
         }
 
-        pub fn next(self: *Iterator) ?struct { key: []const u8, value: []const u8 } {
+        pub fn next(self: *Iterator) ?[2][]const u8 {
             if (self.index >= self.keys.items.len) return null;
 
             const key = self.keys.items[self.index];
             const value = self.map.get(key).?;
             self.index += 1;
 
-            return .{ .key = key, .value = value };
+            return [2][]const u8{ key, value };
         }
 
         pub fn deinit(self: *Iterator) void {
@@ -222,7 +222,7 @@ pub const ENR = struct {
     signature: [signature_size]u8,
 
     pub fn deinit(self: *ENR) void {
-        self.kvs.deinit();
+        if (@import("builtin").target.os.tag == .macos) self.kvs.deinit();
     }
 
     pub fn get(self: *ENR, key: []const u8) ?[]const u8 {
@@ -325,7 +325,7 @@ pub const SignableENR = struct {
     const Self = @This();
 
     pub fn deinit(self: *Self) void {
-        self.kvs.deinit();
+        if (@import("builtin").target.os.tag == .macos) self.kvs.deinit();
     }
 
     pub fn create(key_pair: KeyPair) SignableENR {
@@ -386,8 +386,8 @@ fn encodeIntoFromComponents(out: []u8, kvs: *KVs, seq: u64, signature: [signatur
     defer if (@import("builtin").target.os.tag == .macos) kvs_it.deinit();
 
     while (kvs_it.next()) |entry| {
-        try writer.writeString(entry.key);
-        try writer.writeString(entry.value);
+        try writer.writeString(entry[0]);
+        try writer.writeString(entry[1]);
     }
 }
 
@@ -400,8 +400,8 @@ fn encodeSignedPayload(out: []u8, kvs: *KVs, seq: u64) !void {
     defer if (@import("builtin").target.os.tag == .macos) kvs_it.deinit();
 
     while (kvs_it.next()) |entry| {
-        try writer.writeString(entry.key);
-        try writer.writeString(entry.value);
+        try writer.writeString(entry[0]);
+        try writer.writeString(entry[1]);
     }
 }
 
@@ -437,8 +437,8 @@ fn kvsLen(kvs: *KVs) usize {
     defer if (@import("builtin").target.os.tag == .macos) it.deinit();
 
     while (it.next()) |entry| {
-        length += rlp.elemLen(entry.key.len);
-        length += rlp.elemLen(entry.value.len);
+        length += rlp.elemLen(entry[0].len);
+        length += rlp.elemLen(entry[1].len);
     }
     return length;
 }
@@ -546,7 +546,7 @@ pub const EncodedENR = struct {
         // - keys must be unique
         // - keys must be sorted
         var kvs = KVs.init();
-        defer kvs.deinit();
+        defer if (@import("builtin").target.os.tag == .macos) kvs.deinit();
         while (!list_reader.finished()) {
             const key = try list_reader.read(.{ .short_string, .long_string });
             const value = try list_reader.read(.{ .single_byte, .short_string, .long_string });
