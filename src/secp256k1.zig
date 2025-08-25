@@ -1,8 +1,61 @@
 const std = @import("std");
+const secp256k1 = @import("secp256k1");
 
-pub const Secp256k1 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.Secp256k1, std.crypto.hash.sha3.Keccak256);
+pub const SecretKey = secp256k1.SecretKey;
+pub const PublicKey = secp256k1.PublicKey;
+pub const Message = secp256k1.Message;
+pub const Signature = secp256k1.ecdsa.Signature;
+pub const Secp256k1 = secp256k1.Secp256k1;
+pub const digest_size = 32;
 
-test "secp256k1 - verify" {
+var global_secp_ctx: ?Secp256k1 = null;
+var secp_once = std.once(initSecp256k1Context);
+
+fn initSecp256k1Context() void {
+    global_secp_ctx = Secp256k1.genNew();
+}
+
+fn deinitSecp256k1Context() void {
+    if (global_secp_ctx) |*ctx| {
+        ctx.deinit();
+        global_secp_ctx = null;
+    }
+}
+
+pub fn getSecp256k1Context() *Secp256k1 {
+    secp_once.call();
+    return &global_secp_ctx.?;
+}
+
+/// A streaming verifier for secp256k1 signatures
+pub const Verifier = struct {
+    hasher: std.crypto.hash.sha3.Keccak256,
+    signature: secp256k1.ecdsa.Signature,
+    public_key: PublicKey,
+
+    pub fn init(signature: Signature, public_key: PublicKey) Verifier {
+        return Verifier{
+            .hasher = std.crypto.hash.sha3.Keccak256.init(.{}),
+            .signature = signature,
+            .public_key = public_key,
+        };
+    }
+
+    pub fn update(self: *Verifier, data: []const u8) void {
+        self.hasher.update(data);
+    }
+
+    pub fn verify(self: *Verifier) !void {
+        var hash: [digest_size]u8 = undefined;
+        self.hasher.final(&hash);
+
+        const message = secp256k1.Message.fromDigest(hash);
+
+        try getSecp256k1Context().verifyEcdsa(message, self.signature, self.public_key);
+    }
+};
+
+test "secp256k1 verify" {
     // taken from enr test vector
     var data_buffer: [1000]u8 = undefined;
     var private_key_buffer: [32]u8 = undefined;
@@ -18,19 +71,15 @@ test "secp256k1 - verify" {
     const public_key = try std.fmt.hexToBytes(&public_key_buffer, public_key_hex);
     const signature = try std.fmt.hexToBytes(&signature_buffer, signature_hex);
 
-    const sk = try Secp256k1.KeyPair.fromSecretKey(try Secp256k1.SecretKey.fromBytes(private_key[0..32].*));
-    const pk = try Secp256k1.PublicKey.fromSec1(public_key);
-    const sig = Secp256k1.Signature.fromBytes(signature[0..64].*);
+    const sk = try SecretKey.fromSlice(private_key);
+    const pk = try PublicKey.fromSlice(public_key);
+    const sig = try Signature.fromCompact(signature);
 
-    const sig2 = try sk.sign(data, null);
-    const x = sig2;
-    _ = x;
+    var hash: [digest_size]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(data, &hash, .{});
+    const msg = secp256k1.Message.fromDigest(hash);
+    const sig2 = getSecp256k1Context().signEcdsa(&msg, &sk);
 
-    try sig.verify(data, pk);
-    try std.testing.expectEqualSlices(u8, &pk.toCompressedSec1(), &sk.public_key.toCompressedSec1());
-
-    // Signatures don't match because zig std and enr test vectors use different algos:
-    // - zig std https://www.ietf.org/archive/id/draft-mattsson-cfrg-det-sigs-with-noise-04.html#name-updates-to-rfc-8032-eddsa
-    // - enr test vectors https://www.rfc-editor.org/rfc/rfc6979.txt
-    // try std.testing.expectEqualSlices(u8, &sig2.toBytes(), &sig.toBytes());
+    try getSecp256k1Context().verifyEcdsa(msg, sig, pk);
+    try std.testing.expectEqualSlices(u8, &sig2.serializeCompact(), &sig.serializeCompact());
 }

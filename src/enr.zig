@@ -6,8 +6,9 @@ const RLPReader = rlp.RLPReader;
 const RLPWriter = rlp.RLPWriter;
 
 const Keccak = std.crypto.hash.sha3.Keccak256;
-const Secp256k1 = @import("secp256k1.zig").Secp256k1;
+const secp256k1 = @import("secp256k1.zig");
 
+const digest_size = secp256k1.digest_size;
 pub const max_enr_size = 300;
 pub const signature_size = 64;
 // non-kv bytes
@@ -17,7 +18,8 @@ pub const max_kvs_size = max_enr_size - signature_size - 7;
 // assuming single-byte keys, empty values
 pub const max_kvs = max_kvs_size / 3;
 
-pub const KVs = struct {
+// Conditional compilation: use StringHashMap on macOS, SmallBufMap on other platforms.Because test not working on macOS.
+pub const KVs = if (@import("builtin").target.os.tag == .macos) struct {
     map: std.StringHashMap([]const u8),
     allocator: std.mem.Allocator,
 
@@ -29,7 +31,6 @@ pub const KVs = struct {
     }
 
     pub fn deinit(self: *KVs) void {
-        // Free all keys and values
         var it = self.map.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -39,7 +40,6 @@ pub const KVs = struct {
     }
 
     pub fn put(self: *KVs, key: []const u8, value: []const u8) !void {
-        // Copy key and value to owned memory
         const owned_key = try self.allocator.dupe(u8, key);
         const owned_value = try self.allocator.dupe(u8, value);
         try self.map.put(owned_key, owned_value);
@@ -54,19 +54,53 @@ pub const KVs = struct {
     }
 
     pub const Iterator = struct {
-        inner: std.StringHashMap([]const u8).Iterator,
+        keys: std.ArrayList([]const u8),
+        map: *const std.StringHashMap([]const u8),
+        index: usize,
+
+        pub fn init(kvs: *const KVs) Iterator {
+            var keys = std.ArrayList([]const u8).init(kvs.allocator);
+
+            var map_it = kvs.map.iterator();
+            while (map_it.next()) |entry| {
+                keys.append(entry.key_ptr.*) catch unreachable;
+            }
+
+            std.sort.heap([]const u8, keys.items, {}, struct {
+                fn lessThan(context: void, a: []const u8, b: []const u8) bool {
+                    _ = context;
+                    return std.mem.order(u8, a, b) == .lt;
+                }
+            }.lessThan);
+
+            return Iterator{
+                .keys = keys,
+                .map = &kvs.map,
+                .index = 0,
+            };
+        }
 
         pub fn next(self: *Iterator) ?struct { key: []const u8, value: []const u8 } {
-            if (self.inner.next()) |entry| {
-                return .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
-            }
-            return null;
+            if (self.index >= self.keys.items.len) return null;
+
+            const key = self.keys.items[self.index];
+            const value = self.map.get(key).?;
+            self.index += 1;
+
+            return .{ .key = key, .value = value };
+        }
+
+        pub fn deinit(self: *Iterator) void {
+            self.keys.deinit();
         }
     };
 
     pub fn iterator(self: *const KVs) Iterator {
-        return Iterator{ .inner = self.map.iterator() };
+        return Iterator.init(self);
     }
+} else blk: {
+    const SmallBufMap = @import("small_buf_map.zig").SmallBufMap;
+    break :blk SmallBufMap(max_kvs_size);
 };
 
 pub const IDScheme = enum {
@@ -89,7 +123,7 @@ pub const IDScheme = enum {
     pub fn publicKey(id: IDScheme, value: []const u8) Error!PublicKey {
         switch (id) {
             .v4 => {
-                return PublicKey{ .v4 = Secp256k1.PublicKey.fromSec1(value) catch return Error.BadPubkey };
+                return PublicKey{ .v4 = secp256k1.PublicKey.fromSlice(value) catch return Error.BadPubkey };
             },
         }
     }
@@ -104,13 +138,17 @@ pub const IDScheme = enum {
 };
 
 pub const KeyPair = union(IDScheme) {
-    v4: Secp256k1.KeyPair,
+    v4: secp256k1.SecretKey,
 
     pub fn sign(self: KeyPair, data: []const u8) ![signature_size]u8 {
         switch (self) {
             .v4 => |kp| {
-                const s = try kp.sign(data, null);
-                return s.toBytes();
+                var hashed: [digest_size]u8 = undefined;
+                Keccak.hash(data, &hashed, .{});
+
+                const msg = secp256k1.Message.fromDigest(hashed);
+                const sig = secp256k1.getSecp256k1Context().signEcdsa(&msg, &kp);
+                return sig.serializeCompact();
             },
         }
     }
@@ -118,19 +156,19 @@ pub const KeyPair = union(IDScheme) {
     pub fn publicKey(self: KeyPair) PublicKey {
         switch (self) {
             .v4 => |kp| {
-                return PublicKey{ .v4 = kp.public_key };
+                return PublicKey{ .v4 = kp.publicKey() };
             },
         }
     }
 };
 
 pub const PublicKey = union(IDScheme) {
-    v4: Secp256k1.PublicKey,
+    v4: secp256k1.PublicKey,
 
     pub fn init(id: IDScheme, data: []const u8) !PublicKey {
         switch (id) {
             .v4 => {
-                return try Secp256k1.PublicKey.fromSec1(data);
+                return PublicKey{ .v4 = try secp256k1.PublicKey.fromSlice(data) };
             },
         }
     }
@@ -138,17 +176,18 @@ pub const PublicKey = union(IDScheme) {
     pub fn verify(self: PublicKey, data: []const u8, signature: []const u8) Error!void {
         switch (self) {
             .v4 => |pk| {
-                const sig = Secp256k1.Signature.fromBytes(signature[0..signature_size].*);
-                return sig.verify(data, pk) catch return Error.BadSignature;
+                var hashed: [digest_size]u8 = undefined;
+                Keccak.hash(data, &hashed, .{});
+
+                return try secp256k1.getSecp256k1Context().verifyEcdsa(secp256k1.Message.fromDigest(hashed), try secp256k1.Signature.fromCompact(signature), pk);
             },
         }
     }
 
-    pub fn verifier(self: PublicKey, signature: []const u8) Error!Secp256k1.Verifier {
+    pub fn verifier(self: PublicKey, signature: []const u8) Error!secp256k1.Verifier {
         switch (self) {
             .v4 => |pk| {
-                const sig = Secp256k1.Signature.fromBytes(signature[0..signature_size].*);
-                return sig.verifier(pk) catch return Error.BadSignature;
+                return secp256k1.Verifier.init(secp256k1.Signature.fromCompact(signature) catch return error.BadSignature, pk);
             },
         }
     }
@@ -157,7 +196,7 @@ pub const PublicKey = union(IDScheme) {
         switch (self) {
             .v4 => |pk| {
                 var node_id: NodeId = undefined;
-                Keccak.hash(pk.toUncompressedSec1(), &node_id, .{});
+                Keccak.hash(&pk.serializeUncompressed(), &node_id, .{});
                 return node_id;
             },
         }
@@ -294,7 +333,7 @@ pub const SignableENR = struct {
         switch (key_pair) {
             .v4 => |kp| {
                 kvs.put("id", "v4") catch unreachable;
-                kvs.put("secp256k1", &kp.public_key.toCompressedSec1()) catch unreachable;
+                kvs.put("secp256k1", &kp.publicKey(secp256k1.getSecp256k1Context().*).serialize()) catch unreachable;
             },
         }
         return SignableENR{ .kp = key_pair, .kvs = kvs, .seq = 0 };
@@ -344,6 +383,8 @@ fn encodeIntoFromComponents(out: []u8, kvs: *KVs, seq: u64, signature: [signatur
     try writer.writeInt(u64, seq);
 
     var kvs_it = kvs.iterator();
+    defer if (@import("builtin").target.os.tag == .macos) kvs_it.deinit();
+
     while (kvs_it.next()) |entry| {
         try writer.writeString(entry.key);
         try writer.writeString(entry.value);
@@ -356,6 +397,8 @@ fn encodeSignedPayload(out: []u8, kvs: *KVs, seq: u64) !void {
     try writer.writeInt(u64, seq);
 
     var kvs_it = kvs.iterator();
+    defer if (@import("builtin").target.os.tag == .macos) kvs_it.deinit();
+
     while (kvs_it.next()) |entry| {
         try writer.writeString(entry.key);
         try writer.writeString(entry.value);
@@ -391,6 +434,8 @@ fn signedListLen(kvs: *KVs, seq: u64) usize {
 fn kvsLen(kvs: *KVs) usize {
     var length: usize = 0;
     var it = kvs.iterator();
+    defer if (@import("builtin").target.os.tag == .macos) it.deinit();
+
     while (it.next()) |entry| {
         length += rlp.elemLen(entry.key.len);
         length += rlp.elemLen(entry.value.len);
@@ -573,8 +618,9 @@ const hex = @import("hex.zig").hex;
 test "ENR test vector" {
     const enr_txt = "enr:-IS4QHCYrYZbAKWCBRlAy5zzaDZXJBGkcnh4MHcBFZntXNFrdvJjX04jRzjzCBOonrkTfj499SZuOh8R33Ls8RRcy5wBgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQPKY0yuDUmstAHYpMa2_oxVtw0RW_QAdpzBQA8yWM0xOIN1ZHCCdl8";
     const private_key = try hex("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291");
-    const kp = try Secp256k1.KeyPair.fromSecretKey(try Secp256k1.SecretKey.fromBytes(private_key));
-    const public_key = kp.public_key.toCompressedSec1();
+    const kp = try secp256k1.SecretKey.fromSlice(&private_key);
+
+    const public_key = kp.publicKey(secp256k1.getSecp256k1Context().*).serialize();
     const signature = try hex("7098ad865b00a582051940cb9cf36836572411a47278783077011599ed5cd16b76f2635f4e234738f30813a89eb9137e3e3df5266e3a1f11df72ecf1145ccb9c");
     const seq: u64 = 1;
     const id = "v4";
@@ -603,9 +649,11 @@ test "ENR test vector" {
     try std.testing.expectEqualSlices(u8, signable_enr.get("id").?, decoded_enr.get("id").?);
     try std.testing.expectEqualSlices(u8, signable_enr.get("ip").?, decoded_enr.get("ip").?);
     try std.testing.expectEqualSlices(u8, signable_enr.get("udp").?, decoded_enr.get("udp").?);
+    try std.testing.expectEqual(signable_enr.seq, decoded_enr.seq);
+    try std.testing.expectEqualSlices(u8, signable_enr.kvs.get("secp256k1").?, decoded_enr.kvs.get("secp256k1").?);
 
-    _ = try signable_enr.sign();
-    // try std.testing.expectEqualSlices(u8, signature, &x);
+    const x = try signable_enr.sign();
+    try std.testing.expectEqualSlices(u8, &signature, &x);
 
     var encoded_buffer: [max_enr_size]u8 = undefined;
     const encoded_enr = try EncodedENR.decodeTxtInto(&encoded_buffer, enr_txt);
@@ -614,5 +662,4 @@ test "ENR test vector" {
     try std.testing.expectEqual(decoded_enr.seq, encoded_enr.seq());
     try std.testing.expectEqual(decoded_enr.id(), encoded_enr.id());
     try std.testing.expectEqualSlices(u8, encoded_enr.get("ip").?, decoded_enr.get("ip").?);
-    // try std.testing.expectEqualSlices(u8, decoded_enr.get("ip").?, encoded_enr.get("ip").?);
 }

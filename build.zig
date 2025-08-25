@@ -10,6 +10,8 @@ pub fn build(b: *std.Build) void {
 
     const dep_xev = b.dependency("xev", .{});
 
+    const secp256k1 = b.dependency("secp256k1", .{});
+
     const module_rlp = b.createModule(.{
         .root_source_file = b.path("src/rlp.zig"),
         .target = target,
@@ -22,6 +24,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    module_enr.linkLibrary(secp256k1.artifact("libsecp"));
+    module_enr.addImport("secp256k1", secp256k1.module("secp256k1"));
     b.modules.put(b.dupe("enr"), module_enr) catch @panic("OOM");
 
     const tls_run_test = b.step("test", "Run all tests");
@@ -29,7 +33,7 @@ pub fn build(b: *std.Build) void {
     const test_rlp = b.addTest(.{
         .name = "rlp",
         .root_module = module_rlp,
-        .filters = &[_][]const u8{  },
+        .filters = &[_][]const u8{},
     });
     const install_test_rlp = b.addInstallArtifact(test_rlp, .{});
     const tls_install_test_rlp = b.step("build-test:rlp", "Install the rlp test");
@@ -43,7 +47,7 @@ pub fn build(b: *std.Build) void {
     const test_enr = b.addTest(.{
         .name = "enr",
         .root_module = module_enr,
-        .filters = &[_][]const u8{  },
+        .filters = &[_][]const u8{},
     });
     const install_test_enr = b.addInstallArtifact(test_enr, .{});
     const tls_install_test_enr = b.step("build-test:enr", "Install the enr test");
@@ -64,7 +68,7 @@ pub fn build(b: *std.Build) void {
     const @"test_enr-bench" = b.addTest(.{
         .name = "enr-bench",
         .root_module = @"module_enr-bench",
-        .filters = &[_][]const u8{  },
+        .filters = &[_][]const u8{},
     });
     const @"install_test_enr-bench" = b.addInstallArtifact(@"test_enr-bench", .{});
     const @"tls_install_test_enr-bench" = b.step("build-test:enr-bench", "Install the enr-bench test");
