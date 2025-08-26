@@ -25,8 +25,7 @@ test "bench" {
     const enr_txt = "enr:-IS4QHCYrYZbAKWCBRlAy5zzaDZXJBGkcnh4MHcBFZntXNFrdvJjX04jRzjzCBOonrkTfj499SZuOh8R33Ls8RRcy5wBgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQPKY0yuDUmstAHYpMa2_oxVtw0RW_QAdpzBQA8yWM0xOIN1ZHCCdl8";
     var decoded_enr: ENR = undefined;
     try ENR.decodeTxtInto(&decoded_enr, enr_txt);
-    var encoded_buffer: [enr.max_enr_size]u8 = undefined;
-    var encoded_enr = try EncodedENR.decodeTxtInto(&encoded_buffer, enr_txt);
+    var encoded_enr = try EncodedENR.decodeTxtInto(enr_txt);
 
     const stdout = std.io.getStdErr().writer();
     var bench = zbench.Benchmark.init(std.testing.allocator, .{});

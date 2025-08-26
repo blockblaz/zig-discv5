@@ -15,7 +15,7 @@ fn initSecp256k1Context() void {
     global_secp_ctx = Secp256k1.genNew();
 }
 
-fn deinitSecp256k1Context() void {
+pub fn deinitSecp256k1Context() void {
     if (global_secp_ctx) |*ctx| {
         ctx.deinit();
         global_secp_ctx = null;

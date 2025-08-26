@@ -457,19 +457,31 @@ pub fn decodeTxtIntoRlp(dest: []u8, source: []const u8) ![]u8 {
 
 /// Methods assume that data is a valid RLP-encoded ENR
 pub const EncodedENR = struct {
-    data: []const u8,
+    data: [max_enr_size]u8,
+    len: usize,
 
     const Self = @This();
 
     /// Ensures that `data` is a valid ENR
     pub fn init(data: []const u8) Error!Self {
-        const self = Self{ .data = data };
+        if (data.len > max_enr_size) return Error.TooLong;
+
+        var self = Self{
+            .data = undefined,
+            .len = data.len,
+        };
+        @memcpy(self.data[0..data.len], data);
+
         try self.verify();
         return self;
     }
 
+    pub fn getData(self: *const Self) []const u8 {
+        return self.data[0..self.len];
+    }
+
     pub fn signature(self: *const Self) []const u8 {
-        var outer_reader = RLPReader.init(self.data);
+        var outer_reader = RLPReader.init(self.getData());
         const list_data = outer_reader.read(.{.long_list}) catch unreachable;
         var list_reader = RLPReader.init(list_data);
 
@@ -477,7 +489,7 @@ pub const EncodedENR = struct {
     }
 
     pub fn seq(self: *const Self) u64 {
-        var outer_reader = RLPReader.init(self.data);
+        var outer_reader = RLPReader.init(self.getData());
         const list_data = outer_reader.read(.{.long_list}) catch unreachable;
         var list_reader = RLPReader.init(list_data);
 
@@ -488,7 +500,7 @@ pub const EncodedENR = struct {
     }
 
     pub fn get(self: *const Self, key: []const u8) ?[]const u8 {
-        var outer_reader = RLPReader.init(self.data);
+        var outer_reader = RLPReader.init(self.getData());
         const list_data = outer_reader.read(.{.long_list}) catch unreachable;
         var list_reader = RLPReader.init(list_data);
 
@@ -522,7 +534,7 @@ pub const EncodedENR = struct {
     }
 
     pub fn verify(self: *const Self) Error!void {
-        const data = self.data;
+        const data = self.getData();
         // Sanity bounds checks
         if (data.len < 3 + signature_size) {
             return Error.TooShort;
@@ -577,13 +589,13 @@ pub const EncodedENR = struct {
     }
 
     pub fn encodedLen(self: *const Self) usize {
-        var outer_reader = RLPReader.init(self.data);
+        var outer_reader = RLPReader.init(self.getData());
         const list_data = try outer_reader.read(.{.long_list});
         return rlp.elemLen(list_data.len);
     }
 
     pub fn decodeIntoENR(self: *const Self, enr: *ENR) void {
-        const list_data = RLPReader.init(self.data).read(.{.long_list}) catch unreachable;
+        const list_data = RLPReader.init(self.getData()).read(.{.long_list}) catch unreachable;
         var list_reader = RLPReader.init(list_data);
 
         const sig = list_reader.read(.{.long_string}) catch unreachable;
@@ -601,16 +613,20 @@ pub const EncodedENR = struct {
         }
     }
 
-    pub fn decodeTxtInto(dest: []u8, source: []const u8) !Self {
+    pub fn decodeTxtInto(source: []const u8) !Self {
         if (!std.mem.eql(u8, source[0..4], "enr:")) {
             return Error.BadPrefix;
         }
 
         const decoder = std.base64.url_safe_no_pad.Decoder;
         const size = try decoder.calcSizeForSlice(source[4..]);
-        try decoder.decode(dest[0..size], source[4..]);
-
-        return EncodedENR.init(dest[0..size]);
+        
+        if (size > max_enr_size) return Error.TooLong;
+        
+        var buffer: [max_enr_size]u8 = undefined;
+        try decoder.decode(buffer[0..size], source[4..]);
+        
+        return Self.init(buffer[0..size]);
     }
 };
 
@@ -655,9 +671,8 @@ test "ENR test vector" {
     const x = try signable_enr.sign();
     try std.testing.expectEqualSlices(u8, &signature, &x);
 
-    var encoded_buffer: [max_enr_size]u8 = undefined;
-    const encoded_enr = try EncodedENR.decodeTxtInto(&encoded_buffer, enr_txt);
-    std.debug.print("{any}\n", .{encoded_buffer});
+    // var encoded_buffer: [max_enr_size]u8 = undefined;
+    const encoded_enr = try EncodedENR.decodeTxtInto(enr_txt);
     try std.testing.expectEqualStrings(&decoded_enr.signature, encoded_enr.signature());
     try std.testing.expectEqual(decoded_enr.seq, encoded_enr.seq());
     try std.testing.expectEqual(decoded_enr.id(), encoded_enr.id());
