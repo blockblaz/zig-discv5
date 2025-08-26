@@ -249,6 +249,35 @@ pub const ENR = struct {
         return totalLen(&self.kvs, self.seq);
     }
 
+    /// Encode ENR to base64 text format (with "enr:" prefix)
+    /// The `out` buffer must be at least `encodedTxtLen()` bytes long
+    pub fn encodeToTxt(self: *ENR, out: []u8) ![]u8 {
+        const binary_len = self.encodedLen();
+        const encoder = std.base64.url_safe_no_pad.Encoder;
+        const encoded_len = encoder.calcSize(binary_len);
+        const required_len = 4 + encoded_len;
+
+        if (out.len < required_len) {
+            return error.BufferTooSmall;
+        }
+
+        var binary_buf: [max_enr_size]u8 = undefined;
+        try self.encodeInto(binary_buf[0..binary_len]);
+
+        @memcpy(out[0..4], "enr:");
+        _ = encoder.encode(out[4 .. 4 + encoded_len], binary_buf[0..binary_len]);
+
+        return out[0 .. 4 + encoded_len];
+    }
+
+    /// Calculate the length needed for the encoded text format (including "enr:" prefix)
+    pub fn encodedTxtLen(self: *ENR) usize {
+        const binary_len = self.encodedLen();
+        const encoder = std.base64.url_safe_no_pad.Encoder;
+        const base64_len = encoder.calcSize(binary_len);
+        return 4 + base64_len; // "enr:" + base64
+    }
+
     pub fn decodeInto(enr: *ENR, data: []const u8) Error!void {
         if (data.len < 8 + signature_size) {
             return Error.TooShort;
@@ -374,12 +403,41 @@ pub const SignableENR = struct {
     pub fn encodedLen(self: *Self) usize {
         return totalLen(&self.kvs, self.seq);
     }
+
+    /// Calculate the length needed for the encoded text format (including "enr:" prefix)
+    pub fn encodedTxtLen(self: *Self) usize {
+        const binary_len = self.encodedLen();
+        const encoder = std.base64.url_safe_no_pad.Encoder;
+        const base64_len = encoder.calcSize(binary_len);
+        return 4 + base64_len; // "enr:" + base64
+    }
+
+    /// Encode SignableENR to base64 text format (with "enr:" prefix)
+    /// The `out` buffer must be at least `encodedTxtLen()` bytes long
+    pub fn encodeToTxt(self: *Self, out: []u8) ![]u8 {
+        const binary_len = self.encodedLen();
+        const encoder = std.base64.url_safe_no_pad.Encoder;
+        const encoded_len = encoder.calcSize(binary_len);
+        const required_len = 4 + encoded_len;
+
+        if (out.len < required_len) {
+            return error.BufferTooSmall;
+        }
+
+        var binary_buf: [max_enr_size]u8 = undefined;
+        try self.encodeInto(binary_buf[0..binary_len]);
+
+        @memcpy(out[0..4], "enr:");
+        _ = encoder.encode(out[4 .. 4 + encoded_len], binary_buf[0..binary_len]);
+
+        return out[0..required_len];
+    }
 };
 
 fn encodeIntoFromComponents(out: []u8, kvs: *KVs, seq: u64, signature: [signature_size]u8) !void {
-    const writer = RLPWriter.init(out);
+    var writer = RLPWriter.init(out);
     try writer.writeListLength(listLen(kvs, seq));
-    try writer.writeString(signature);
+    try writer.writeString(&signature);
     try writer.writeInt(u64, seq);
 
     var kvs_it = kvs.iterator();
@@ -588,12 +646,6 @@ pub const EncodedENR = struct {
         }
     }
 
-    pub fn encodedLen(self: *const Self) usize {
-        var outer_reader = RLPReader.init(self.getData());
-        const list_data = try outer_reader.read(.{.long_list});
-        return rlp.elemLen(list_data.len);
-    }
-
     pub fn decodeIntoENR(self: *const Self, enr: *ENR) void {
         const list_data = RLPReader.init(self.getData()).read(.{.long_list}) catch unreachable;
         var list_reader = RLPReader.init(list_data);
@@ -620,12 +672,12 @@ pub const EncodedENR = struct {
 
         const decoder = std.base64.url_safe_no_pad.Decoder;
         const size = try decoder.calcSizeForSlice(source[4..]);
-        
+
         if (size > max_enr_size) return Error.TooLong;
-        
+
         var buffer: [max_enr_size]u8 = undefined;
         try decoder.decode(buffer[0..size], source[4..]);
-        
+
         return Self.init(buffer[0..size]);
     }
 };
@@ -656,6 +708,34 @@ test "ENR test vector" {
     try std.testing.expectEqualSlices(u8, ip, decoded_enr.kvs.get("ip").?);
     try std.testing.expectEqualSlices(u8, udp, decoded_enr.kvs.get("udp").?);
 
+    // Fix: decode the expected base64 data first
+    var expected_binary: [max_enr_size]u8 = undefined;
+    const decoder = std.base64.url_safe_no_pad.Decoder;
+    const expected_size = try decoder.calcSizeForSlice(enr_txt[4..]);
+    try decoder.decode(expected_binary[0..expected_size], enr_txt[4..]);
+
+    var txt: [max_enr_size]u8 = undefined;
+    const len = decoded_enr.encodedLen();
+    try decoded_enr.encodeInto(txt[0..len]);
+    try std.testing.expectEqualSlices(u8, txt[0..len], expected_binary[0..expected_size]);
+
+    // === 添加 encodeToTxt 的断言测试 ===
+
+    // 1. 测试 encodedTxtLen 计算是否正确
+    const expected_txt_len = decoded_enr.encodedTxtLen();
+    const actual_txt_len = enr_txt.len;
+    try std.testing.expectEqual(actual_txt_len, expected_txt_len);
+
+    // 2. 测试 encodeToTxt 是否能正确重现原始文本
+    var encoded_txt_buf: [1000]u8 = undefined; // 足够大的缓冲区
+    const encoded_txt = try decoded_enr.encodeToTxt(&encoded_txt_buf);
+    try std.testing.expectEqualStrings(enr_txt, encoded_txt);
+
+    // 3. 测试缓冲区长度检查
+    var small_buf: [10]u8 = undefined;
+    const encode_result = decoded_enr.encodeToTxt(&small_buf);
+    try std.testing.expectError(error.BufferTooSmall, encode_result);
+
     var signable_enr = SignableENR.create(KeyPair{ .v4 = kp });
     defer signable_enr.deinit();
     signable_enr.seq = seq;
@@ -670,6 +750,17 @@ test "ENR test vector" {
 
     const x = try signable_enr.sign();
     try std.testing.expectEqualSlices(u8, &signature, &x);
+
+    // === 测试 SignableENR 的 encodeToTxt ===
+
+    // 4. 测试 SignableENR.encodeToTxt
+    const signable_txt_len = signable_enr.encodedTxtLen();
+    var signable_txt_buf: [1000]u8 = undefined;
+    const signable_encoded_txt = try signable_enr.encodeToTxt(&signable_txt_buf);
+
+    // SignableENR 编码后应该与原始 ENR 文本相同（因为签名相同）
+    try std.testing.expectEqualStrings(enr_txt, signable_encoded_txt);
+    try std.testing.expectEqual(enr_txt.len, signable_txt_len);
 
     // var encoded_buffer: [max_enr_size]u8 = undefined;
     const encoded_enr = try EncodedENR.decodeTxtInto(enr_txt);
