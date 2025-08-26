@@ -234,7 +234,7 @@ pub const ENR = struct {
     }
 
     pub fn publicKey(self: *ENR) PublicKey {
-        return self.id().publicKeyFromKVs(self.kvs) catch unreachable;
+        return self.id().publicKeyFromKVs(&self.kvs) catch unreachable;
     }
 
     pub fn nodeId(self: *ENR) NodeId {
@@ -344,6 +344,52 @@ pub const ENR = struct {
 
         try decodeInto(enr, buffer[0..size]);
     }
+
+    pub fn getIp(self: *ENR) !?std.net.Ip4Address {
+        if (self.get("ip")) |ip_bytes| {
+            if (ip_bytes.len != 4) return error.InvalidLength;
+            return std.net.Ip4Address.init(ip_bytes[0..4].*, 0);
+        }
+        return null;
+    }
+
+    pub fn getIpStr(self: *ENR, out: []u8) !?[]const u8 {
+        if (self.get("ip")) |ip_bytes| {
+            if (ip_bytes.len != 4) return error.InvalidLength;
+            const formatted = try std.fmt.bufPrint(out, "{}.{}.{}.{}", .{ ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3] });
+            return formatted;
+        }
+        return null;
+    }
+
+    pub fn getUdp(self: *ENR) !?u16 {
+        if (self.get("udp")) |udp_bytes| {
+            if (udp_bytes.len != 2) return error.InvalidLength;
+            return std.mem.readInt(u16, udp_bytes[0..2], .big);
+        }
+        return null;
+    }
+
+    pub fn getPublicKeyStr(self: *ENR, out: []u8, case: std.fmt.Case) ![]const u8 {
+        const pk = self.publicKey();
+        const serialized = switch (pk) {
+            .v4 => |p| p.serialize(),
+        };
+
+        const public_key_hex = std.fmt.bytesToHex(serialized, case);
+        if (out.len < public_key_hex.len + 2) return error.BufferTooSmall;
+        @memcpy(out[0..2], "0x");
+        @memcpy(out[2 .. public_key_hex.len + 2], public_key_hex[0..public_key_hex.len]);
+        return out[0 .. public_key_hex.len + 2];
+    }
+
+    pub fn getSignatureStr(self: *ENR, out: []u8, case: std.fmt.Case) ![]const u8 {
+        const signature_hex = std.fmt.bytesToHex(self.signature, case);
+        if (out.len < signature_hex.len + 2) return error.BufferTooSmall;
+        @memcpy(out[0..2], "0x");
+        @memcpy(out[2 .. signature_hex.len + 2], signature_hex[0..signature_hex.len]);
+        return out[0 .. signature_hex.len + 2];
+    }
 };
 
 pub const SignableENR = struct {
@@ -381,7 +427,7 @@ pub const SignableENR = struct {
     }
 
     pub fn publicKey(self: *Self) PublicKey {
-        return self.id().publicKeyFromKVs(self.kvs) catch unreachable;
+        return self.id().publicKeyFromKVs(&self.kvs) catch unreachable;
     }
 
     pub fn nodeId(self: *Self) NodeId {
@@ -431,6 +477,52 @@ pub const SignableENR = struct {
         _ = encoder.encode(out[4 .. 4 + encoded_len], binary_buf[0..binary_len]);
 
         return out[0..required_len];
+    }
+
+    pub fn getIp(self: *Self) !?std.net.Ip4Address {
+        if (self.get("ip")) |ip_bytes| {
+            if (ip_bytes.len != 4) return error.InvalidLength;
+            return std.net.Ip4Address.init(ip_bytes[0..4].*, 0);
+        }
+        return null;
+    }
+
+    pub fn getIpStr(self: *Self, out: []u8) !?[]const u8 {
+        if (self.get("ip")) |ip_bytes| {
+            if (ip_bytes.len != 4) return error.InvalidLength;
+            const formatted = try std.fmt.bufPrint(out, "{}.{}.{}.{}", .{ ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3] });
+            return formatted;
+        }
+        return null;
+    }
+
+    pub fn getUdp(self: *Self) !?u16 {
+        if (self.get("udp")) |udp_bytes| {
+            if (udp_bytes.len != 2) return error.InvalidLength;
+            return std.mem.readInt(u16, udp_bytes[0..2], .big);
+        }
+        return null;
+    }
+
+    pub fn getPublicKeyStr(self: *Self, out: []u8, case: std.fmt.Case) ![]const u8 {
+        const pk = self.publicKey();
+        const serialized = switch (pk) {
+            .v4 => |p| p.serialize(),
+        };
+
+        const public_key_hex = std.fmt.bytesToHex(serialized, case);
+        if (out.len < public_key_hex.len + 2) return error.BufferTooSmall;
+        @memcpy(out[0..2], "0x");
+        @memcpy(out[2 .. public_key_hex.len + 2], public_key_hex[0..public_key_hex.len]);
+        return out[0 .. public_key_hex.len + 2];
+    }
+
+    pub fn getSignatureStr(self: *Self, out: []u8, case: std.fmt.Case) ![]const u8 {
+        const signature_hex = std.fmt.bytesToHex(try self.sign(), case);
+        if (out.len < signature_hex.len + 2) return error.BufferTooSmall;
+        @memcpy(out[0..2], "0x");
+        @memcpy(out[2 .. signature_hex.len + 2], signature_hex[0..signature_hex.len]);
+        return out[0 .. signature_hex.len + 2];
     }
 };
 
@@ -538,12 +630,13 @@ pub const EncodedENR = struct {
         return self.data[0..self.len];
     }
 
-    pub fn signature(self: *const Self) []const u8 {
+    pub fn signature(self: *const Self) [signature_size]u8 {
         var outer_reader = RLPReader.init(self.getData());
         const list_data = outer_reader.read(.{.long_list}) catch unreachable;
         var list_reader = RLPReader.init(list_data);
 
-        return list_reader.read(.{.long_string}) catch unreachable;
+        const sig = list_reader.read(.{.long_string}) catch unreachable;
+        return sig[0..signature_size].*;
     }
 
     pub fn seq(self: *const Self) u64 {
@@ -680,6 +773,52 @@ pub const EncodedENR = struct {
 
         return Self.init(buffer[0..size]);
     }
+
+    pub fn getIp(self: *const Self) !?std.net.Ip4Address {
+        if (self.get("ip")) |ip_bytes| {
+            if (ip_bytes.len != 4) return error.InvalidLength;
+            return std.net.Ip4Address.init(ip_bytes[0..4].*, 0);
+        }
+        return null;
+    }
+
+    pub fn getIpStr(self: *const Self, out: []u8) !?[]const u8 {
+        if (self.get("ip")) |ip_bytes| {
+            if (ip_bytes.len != 4) return error.InvalidLength;
+            const formatted = try std.fmt.bufPrint(out, "{}.{}.{}.{}", .{ ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3] });
+            return formatted;
+        }
+        return null;
+    }
+
+    pub fn getUdp(self: *const Self) !?u16 {
+        if (self.get("udp")) |udp_bytes| {
+            if (udp_bytes.len != 2) return error.InvalidLength;
+            return std.mem.readInt(u16, udp_bytes[0..2], .big);
+        }
+        return null;
+    }
+
+    pub fn getPublicKeyStr(self: *const Self, out: []u8, case: std.fmt.Case) ![]const u8 {
+        const pk = self.publicKey();
+        const serialized = switch (pk) {
+            .v4 => |p| p.serialize(),
+        };
+
+        const public_key_hex = std.fmt.bytesToHex(serialized, case);
+        if (out.len < public_key_hex.len + 2) return error.BufferTooSmall;
+        @memcpy(out[0..2], "0x");
+        @memcpy(out[2 .. public_key_hex.len + 2], public_key_hex[0..public_key_hex.len]);
+        return out[0 .. public_key_hex.len + 2];
+    }
+
+    pub fn getSignatureStr(self: *const Self, out: []u8, case: std.fmt.Case) ![]const u8 {
+        const signature_hex = std.fmt.bytesToHex(self.signature(), case);
+        if (out.len < signature_hex.len + 2) return error.BufferTooSmall;
+        @memcpy(out[0..2], "0x");
+        @memcpy(out[2 .. signature_hex.len + 2], signature_hex[0..signature_hex.len]);
+        return out[0 .. signature_hex.len + 2];
+    }
 };
 
 const hex = @import("hex.zig").hex;
@@ -707,8 +846,17 @@ test "ENR test vector" {
     try std.testing.expectEqualSlices(u8, id, decoded_enr.kvs.get("id").?);
     try std.testing.expectEqualSlices(u8, ip, decoded_enr.kvs.get("ip").?);
     try std.testing.expectEqualSlices(u8, udp, decoded_enr.kvs.get("udp").?);
+    var ip_out: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("127.0.0.1", (try decoded_enr.getIpStr(&ip_out)).?);
+    try std.testing.expectEqual(30303, (try decoded_enr.getUdp()).?);
+    var public_key_buf: [100]u8 = undefined;
+    const public_key_out = try decoded_enr.getPublicKeyStr(&public_key_buf, .lower);
+    try std.testing.expectEqualSlices(u8, "0x03ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd3138", public_key_out);
 
-    // Fix: decode the expected base64 data first
+    try std.testing.expectEqual((try std.net.Address.parseIp4("127.0.0.1", 0)).in, (try decoded_enr.getIp()).?);
+    var sig_buf: [150]u8 = undefined;
+    const sig_out = try decoded_enr.getSignatureStr(&sig_buf, .lower);
+    try std.testing.expectEqualSlices(u8, "0x7098ad865b00a582051940cb9cf36836572411a47278783077011599ed5cd16b76f2635f4e234738f30813a89eb9137e3e3df5266e3a1f11df72ecf1145ccb9c", sig_out);
     var expected_binary: [max_enr_size]u8 = undefined;
     const decoder = std.base64.url_safe_no_pad.Decoder;
     const expected_size = try decoder.calcSizeForSlice(enr_txt[4..]);
@@ -719,19 +867,14 @@ test "ENR test vector" {
     try decoded_enr.encodeInto(txt[0..len]);
     try std.testing.expectEqualSlices(u8, txt[0..len], expected_binary[0..expected_size]);
 
-    // === 添加 encodeToTxt 的断言测试 ===
-
-    // 1. 测试 encodedTxtLen 计算是否正确
     const expected_txt_len = decoded_enr.encodedTxtLen();
     const actual_txt_len = enr_txt.len;
     try std.testing.expectEqual(actual_txt_len, expected_txt_len);
 
-    // 2. 测试 encodeToTxt 是否能正确重现原始文本
-    var encoded_txt_buf: [1000]u8 = undefined; // 足够大的缓冲区
+    var encoded_txt_buf: [1000]u8 = undefined;
     const encoded_txt = try decoded_enr.encodeToTxt(&encoded_txt_buf);
     try std.testing.expectEqualStrings(enr_txt, encoded_txt);
 
-    // 3. 测试缓冲区长度检查
     var small_buf: [10]u8 = undefined;
     const encode_result = decoded_enr.encodeToTxt(&small_buf);
     try std.testing.expectError(error.BufferTooSmall, encode_result);
@@ -747,25 +890,41 @@ test "ENR test vector" {
     try std.testing.expectEqualSlices(u8, signable_enr.get("udp").?, decoded_enr.get("udp").?);
     try std.testing.expectEqual(signable_enr.seq, decoded_enr.seq);
     try std.testing.expectEqualSlices(u8, signable_enr.kvs.get("secp256k1").?, decoded_enr.kvs.get("secp256k1").?);
+    var ip_out2: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("127.0.0.1", (try signable_enr.getIpStr(&ip_out2)).?);
+    try std.testing.expectEqual(30303, (try signable_enr.getUdp()).?);
+    var public_key_buf2: [100]u8 = undefined;
+    const public_key_out2 = try signable_enr.getPublicKeyStr(&public_key_buf2, .lower);
+    try std.testing.expectEqualSlices(u8, "0x03ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd3138", public_key_out2);
+    try std.testing.expectEqual((try std.net.Address.parseIp4("127.0.0.1", 0)).in, (try signable_enr.getIp()).?);
+    var sig_buf1: [150]u8 = undefined;
+    const sig_out2 = try signable_enr.getSignatureStr(&sig_buf1, .lower);
+    try std.testing.expectEqualSlices(u8, "0x7098ad865b00a582051940cb9cf36836572411a47278783077011599ed5cd16b76f2635f4e234738f30813a89eb9137e3e3df5266e3a1f11df72ecf1145ccb9c", sig_out2);
 
     const x = try signable_enr.sign();
     try std.testing.expectEqualSlices(u8, &signature, &x);
 
-    // === 测试 SignableENR 的 encodeToTxt ===
-
-    // 4. 测试 SignableENR.encodeToTxt
     const signable_txt_len = signable_enr.encodedTxtLen();
     var signable_txt_buf: [1000]u8 = undefined;
     const signable_encoded_txt = try signable_enr.encodeToTxt(&signable_txt_buf);
 
-    // SignableENR 编码后应该与原始 ENR 文本相同（因为签名相同）
     try std.testing.expectEqualStrings(enr_txt, signable_encoded_txt);
     try std.testing.expectEqual(enr_txt.len, signable_txt_len);
 
-    // var encoded_buffer: [max_enr_size]u8 = undefined;
     const encoded_enr = try EncodedENR.decodeTxtInto(enr_txt);
-    try std.testing.expectEqualStrings(&decoded_enr.signature, encoded_enr.signature());
+    try std.testing.expectEqualStrings(&decoded_enr.signature, &encoded_enr.signature());
     try std.testing.expectEqual(decoded_enr.seq, encoded_enr.seq());
     try std.testing.expectEqual(decoded_enr.id(), encoded_enr.id());
     try std.testing.expectEqualSlices(u8, encoded_enr.get("ip").?, decoded_enr.get("ip").?);
+    try std.testing.expectEqualSlices(u8, encoded_enr.get("udp").?, decoded_enr.get("udp").?);
+    var ip_out3: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("127.0.0.1", (try encoded_enr.getIpStr(&ip_out3)).?);
+    try std.testing.expectEqual(30303, (try encoded_enr.getUdp()).?);
+    var public_key_buf3: [100]u8 = undefined;
+    const public_key_out3 = try encoded_enr.getPublicKeyStr(&public_key_buf3, .lower);
+    try std.testing.expectEqualSlices(u8, "0x03ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd3138", public_key_out3);
+    try std.testing.expectEqual((try std.net.Address.parseIp4("127.0.0.1", 0)).in, (try encoded_enr.getIp()).?);
+    var sig_buf3: [150]u8 = undefined;
+    const sig_out3 = try encoded_enr.getSignatureStr(&sig_buf3, .lower);
+    try std.testing.expectEqualSlices(u8, "0x7098ad865b00a582051940cb9cf36836572411a47278783077011599ed5cd16b76f2635f4e234738f30813a89eb9137e3e3df5266e3a1f11df72ecf1145ccb9c", sig_out3);
 }
