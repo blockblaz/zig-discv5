@@ -140,6 +140,14 @@ pub const IDScheme = enum {
 pub const KeyPair = union(IDScheme) {
     v4: secp256k1.SecretKey,
 
+    pub fn generate() KeyPair {
+        return KeyPair{ .v4 = secp256k1.SecretKey.generate() };
+    }
+
+    pub fn generateWithRandom(rng: std.Random) KeyPair {
+        return KeyPair{ .v4 = secp256k1.SecretKey.generateWithRandom(rng) };
+    }
+
     pub fn sign(self: KeyPair, data: []const u8) ![signature_size]u8 {
         switch (self) {
             .v4 => |kp| {
@@ -740,7 +748,8 @@ pub const EncodedENR = struct {
     }
 
     pub fn decodeIntoENR(self: *const Self, enr: *ENR) void {
-        const list_data = RLPReader.init(self.getData()).read(.{.long_list}) catch unreachable;
+        var outer_reader = RLPReader.init(self.getData());
+        const list_data = outer_reader.read(.{.long_list}) catch unreachable;
         var list_reader = RLPReader.init(list_data);
 
         const sig = list_reader.read(.{.long_string}) catch unreachable;
