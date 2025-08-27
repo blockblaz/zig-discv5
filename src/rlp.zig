@@ -32,13 +32,14 @@ fn intByteLen(comptime T: type, num: T) u8 {
 }
 
 pub fn intLen(comptime T: type, num: T) usize {
-    if (num == 0) {
-        return 0;
-    } else if (num < 128) {
-        return 1;
-    } else {
-        return 1 + intByteLen(T, num);
+    comptime {
+        const type_info = @typeInfo(T);
+        if (type_info != .int or type_info.int.signedness != .unsigned) {
+            @compileError("T must be an unsigned integer type");
+        }
     }
+
+    return if (num < 128) 1 else 1 + intByteLen(T, num);
 }
 
 pub fn elemLen(byte_len: usize) usize {
