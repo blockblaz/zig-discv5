@@ -755,7 +755,7 @@ pub const EncodedENR = struct {
         const sig = list_reader.read(.{.long_string}) catch unreachable;
         @memcpy(&enr.signature, sig);
 
-        const seq_bytes = list_reader.read(.{ .single_byte, .short_string });
+        const seq_bytes = list_reader.read(.{ .single_byte, .short_string }) catch unreachable;
         enr.seq = std.mem.readVarInt(u64, seq_bytes, .big);
 
         enr.kvs = KVs.init();
