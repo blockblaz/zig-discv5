@@ -525,7 +525,7 @@ pub const SignableENR = struct {
         return out[0 .. public_key_hex.len + 2];
     }
 
-    pub fn getSignatureStr(self: *Self, out: []u8, case: std.fmt.Case) ![]const u8 {
+    pub fn signStr(self: *Self, out: []u8, case: std.fmt.Case) ![]const u8 {
         const signature_hex = std.fmt.bytesToHex(try self.sign(), case);
         if (out.len < signature_hex.len + 2) return error.BufferTooSmall;
         @memcpy(out[0..2], "0x");
@@ -907,7 +907,7 @@ test "ENR test vector" {
     try std.testing.expectEqualSlices(u8, "0x03ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd3138", public_key_out2);
     try std.testing.expectEqual((try std.net.Address.parseIp4("127.0.0.1", 0)).in, (try signable_enr.getIp()).?);
     var sig_buf1: [150]u8 = undefined;
-    const sig_out2 = try signable_enr.getSignatureStr(&sig_buf1, .lower);
+    const sig_out2 = try signable_enr.signStr(&sig_buf1, .lower);
     try std.testing.expectEqualSlices(u8, "0x7098ad865b00a582051940cb9cf36836572411a47278783077011599ed5cd16b76f2635f4e234738f30813a89eb9137e3e3df5266e3a1f11df72ecf1145ccb9c", sig_out2);
 
     const x = try signable_enr.sign();
